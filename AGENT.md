@@ -29,7 +29,7 @@ Both tools are protected from going beyond the project: it is checked that the a
 3. Step 2 is repeated until the LLM returns a final answer without invoking the tools
 4. The final answer is parsed: the `source` field is extracted from the text (if it is present in the format `Source: ...`), and the rest is considered the `answer`. Then, a JSON is output with the `answer`, `source`, and `tool_calls` fields (the history of all calls).
 
-##Promt 
+## Promt 
 You are a helpful documentation agent for a software project.
 You have access to two tools:
 
