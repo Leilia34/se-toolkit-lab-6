@@ -8,6 +8,20 @@
 
 ### Tool schemas
 I will define them in OpenAI-compatible format as required by the LLM API.
+s. Example:
+
+```json
+{
+  "name": "read_file",
+  "description": "Read contents of a file",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {"type": "string"}
+    },
+    "required": ["path"]
+  }
+}
 
 ### Agentic loop
 1. Send the user question + tool definitions to the LLM.
