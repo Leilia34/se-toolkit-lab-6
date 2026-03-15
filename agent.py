@@ -15,12 +15,18 @@ env_path = Path('.env.agent.secret')
 if not env_path.exists():
     print("❌ .env.agent.secret not found. Please create it from .env.agent.example", file=sys.stderr)
     sys.exit(1)
+load_dotenv('.env.agent.secret')
+load_dotenv('.env.docker.secret')
 
-load_dotenv(env_path)
+LLM_API_KEY = os.getenv('LLM_API_KEY')
+LLM_API_BASE = os.getenv('LLM_API_BASE')
+LLM_MODEL = os.getenv('LLM_MODEL')
+LMS_API_KEY = os.getenv('LMS_API_KEY')
+AGENT_API_BASE_URL = os.getenv('AGENT_API_BASE_URL', 'http://localhost:42002')
 
-API_KEY = os.getenv('LLM_API_KEY')
-API_BASE = os.getenv('LLM_API_BASE', 'https://openrouter.ai/api/v1')
-MODEL = os.getenv('LLM_MODEL')
+API_KEY = LLM_API_KEY
+API_BASE = LLM_API_BASE
+MODEL = LLM_MODEL
 
 if not API_KEY or not MODEL:
     print("❌ Missing LLM_API_KEY or LLM_MODEL in .env.agent.secret", file=sys.stderr)
@@ -28,37 +34,58 @@ if not API_KEY or not MODEL:
 
 PROJECT_ROOT = Path(__file__).parent.absolute()
 
-# ---------- Tool implementations ----------
-def read_file(path: str) -> str:
+def query_api(method: str, path: str, body: str = None) -> str:
+    """Выполняет запрос к бэкенду и возвращает статус и тело ответа."""
+    url = f"{AGENT_API_BASE_URL.rstrip('/')}/{path.lstrip('/')}"
+    headers = {
+        "X-API-Key": LMS_API_KEY,
+        "Content-Type": "application/json"
+    }
+    try:
+        response = requests.request(
+            method=method.upper(),
+            url=url,
+            headers=headers,
+            data=body if body else None,
+            timeout=10
+        )
+        try:
+            body_content = response.json()
+        except:
+            body_content = response.text
+        return json.dumps({"status_code": response.status_code, "body": body_content})
+    except Exception as e:
+        return json.dumps({"status_code": 0, "body": f"Request failed: {str(e)}"})
+
+def read_file(filepath: str) -> str:
     """Read a file from the project directory."""
     try:
-        full_path = (PROJECT_ROOT / path).resolve()
+        full_path = (PROJECT_ROOT / filepath).resolve()
         # Security: prevent directory traversal
         if not str(full_path).startswith(str(PROJECT_ROOT)):
             return "Error: Access denied (path outside project)"
         if not full_path.exists():
-            return f"Error: File {path} does not exist"
+            return f"Error: File {filepath} does not exist"
         if not full_path.is_file():
-            return f"Error: {path} is not a file"
+            return f"Error: {filepath} is not a file"
         return full_path.read_text(encoding='utf-8')
     except Exception as e:
         return f"Error reading file: {str(e)}"
 
-def list_files(path: str) -> str:
+def list_files(dirpath: str) -> str:
     """List contents of a directory."""
     try:
-        full_path = (PROJECT_ROOT / path).resolve()
+        full_path = (PROJECT_ROOT / dirpath).resolve()
         if not str(full_path).startswith(str(PROJECT_ROOT)):
             return "Error: Access denied (path outside project)"
         if not full_path.exists():
-            return f"Error: Directory {path} does not exist"
+            return f"Error: Directory {dirpath} does not exist"
         if not full_path.is_dir():
-            return f"Error: {path} is not a directory"
+            return f"Error: {dirpath} is not a directory"
         items = [p.name for p in full_path.iterdir()]
         return "\n".join(sorted(items))
     except Exception as e:
         return f"Error listing directory: {str(e)}"
-
 # ---------- Tool schemas (OpenAI format) ----------
 tools = [
     {
@@ -69,12 +96,9 @@ tools = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Relative path from project root, e.g., 'wiki/git-workflow.md'"
-                    }
+                    "filepath": {"type": "string", "description": "Path to the file"}
                 },
-                "required": ["path"]
+                "required": ["filepath"]
             }
         }
     },
@@ -82,16 +106,39 @@ tools = [
         "type": "function",
         "function": {
             "name": "list_files",
-            "description": "List files and directories at a given path. Use this to explore the wiki structure before reading files.",
+            "description": "List files in a directory.",
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "dirpath": {"type": "string", "description": "Directory path"}
+                },
+                "required": ["dirpath"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_api",
+            "description": "Send HTTP request to the backend API. Use for questions about live data, system status, or API behavior. Returns status code and response body.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "method": {
+                        "type": "string",
+                        "enum": ["GET", "POST", "PUT", "DELETE"],
+                        "description": "HTTP method"
+                    },
                     "path": {
                         "type": "string",
-                        "description": "Relative directory path from project root, e.g., 'wiki'"
+                        "description": "API endpoint path (e.g., '/items/')"
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Optional JSON request body for POST/PUT"
                     }
                 },
-                "required": ["path"]
+                "required": ["method", "path"]
             }
         }
     }
@@ -99,15 +146,15 @@ tools = [
 
 # ---------- System prompt ----------
 SYSTEM_PROMPT = """You are a helpful documentation agent for a software project.
-You have access to two tools:
-- list_files(path): lists files in a directory (use to explore the wiki)
-- read_file(path): reads a file from the project (use to get content of documentation files)
-
-Your goal is to answer the user's question based on the wiki documentation.
-Always start by exploring the wiki with list_files, then read relevant files to find the answer.
-When you finally give the answer, include the source file path and section anchor in the 'source' field.
-The source should be in the format: wiki/<filename>#section (e.g., wiki/git-workflow.md#resolving-merge-conflicts).
-If you are uncertain about the exact section, you can omit the anchor, but the file path must be included.
+You have access to tools:
+- list_files(path): lists files in a directory (use to explore the wiki or source code)
+- read_file(path): reads a file from the project (use to get content of documentation files or source code)
+- query_api(method, path, body): sends HTTP request to the live backend API (use for questions about live data, system status, or API behavior). Returns status code and response body.
+Guidelines:
+- For questions about the wiki, documentation, or source code, use list_files and read_file.
+- For questions about live data (e.g., item count, analytics), query the appropriate API endpoint using query_api.
+- If you get an error from the API, read the relevant source code to diagnose the bug.
+- When giving the final answer, include the source file path and section anchor in the 'source' field if the answer came from documentation. The source should be in the format: wiki/<filename>#section (e.g., wiki/git-workflow.md#resolving-merge-conflicts). If the answer came from the API, the source field can be empty.
 
 Do not make up information. If you cannot find the answer, say so.
 """
@@ -138,7 +185,7 @@ def call_llm(messages, tools=None):
         return response.json()
     except Exception as e:
         print(f'Error calling LLM: {e}', file=sys.stderr)
-        sys.exit(1)
+        raise RuntimeError(f"LLM call failed: {e}") from e
 
 def execute_tool_calls(tool_calls):
     results = []
@@ -149,6 +196,8 @@ def execute_tool_calls(tool_calls):
             result = read_file(**args)
         elif func_name == 'list_files':
             result = list_files(**args)
+        elif func_name == 'query_api':
+            result = query_api(**args)
         else:
             result = f"Unknown tool: {func_name}"
         results.append({
@@ -159,17 +208,12 @@ def execute_tool_calls(tool_calls):
         })
     return results
 
-def main():
-    if len(sys.argv) != 2:
-        print("Usage: uv run agent.py 'Your question'", file=sys.stderr)
-        sys.exit(1)
-
-    question = sys.argv[1]
+def process_question(question: str) -> dict:
+    """Обрабатывает вопрос и возвращает словарь с ответом, source и tool_calls."""
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": question}
     ]
-
     tool_calls_history = []
     max_iter = 10
     for _ in range(max_iter):
@@ -209,21 +253,25 @@ def main():
                     source = line[7:].strip()
                     final_content = '\n'.join(l for l in lines if not l.lower().startswith('source:'))
                     break
-            output = {
+            return {
                 "answer": final_content.strip(),
                 "source": source,
                 "tool_calls": tool_calls_history
             }
-            print(json.dumps(output, ensure_ascii=False))
-            return
-
     # If we exit the loop due to max iterations
-    output = {
+    return {
         "answer": "Maximum tool calls reached without final answer.",
         "source": "",
         "tool_calls": tool_calls_history
     }
-    print(json.dumps(output, ensure_ascii=False))
 
+def main():
+    if len(sys.argv) != 2:
+        print("Usage: uv run agent.py 'Your question'", file=sys.stderr)
+        sys.exit(1)
+    question = sys.argv[1]
+    output = process_question(question)
+    print(json.dumps(output, ensure_ascii=False))
+ 
 if __name__ == '__main__':
     main()
