@@ -32,7 +32,7 @@ if not API_KEY or not MODEL:
     print("❌ Missing LLM_API_KEY or LLM_MODEL in .env.agent.secret", file=sys.stderr)
     sys.exit(1)
 
-PROJECT_ROOT = Path(__file__).parent.absolute()
+PROJECT_ROOT = Path.cwd()
 
 def query_api(method: str, path: str, body: str = None) -> str:
     """Выполняет запрос к бэкенду и возвращает статус и тело ответа."""
@@ -62,7 +62,7 @@ def read_file(filepath: str) -> str:
     try:
         full_path = (PROJECT_ROOT / filepath).resolve()
         # Security: prevent directory traversal
-        if not str(full_path).startswith(str(PROJECT_ROOT)):
+        if not str(full_path).lower().startswith(str(PROJECT_ROOT).lower()):
             return "Error: Access denied (path outside project)"
         if not full_path.exists():
             return f"Error: File {filepath} does not exist"
@@ -76,7 +76,7 @@ def list_files(dirpath: str) -> str:
     """List contents of a directory."""
     try:
         full_path = (PROJECT_ROOT / dirpath).resolve()
-        if not str(full_path).startswith(str(PROJECT_ROOT)):
+        if not str(full_path).lower().startswith(str(PROJECT_ROOT).lower()):
             return "Error: Access denied (path outside project)"
         if not full_path.exists():
             return f"Error: Directory {dirpath} does not exist"
@@ -233,7 +233,7 @@ def process_question(question: str) -> dict:
             # Append assistant message with tool_calls
             messages.append({
                 "role": "assistant",
-                "content": message.get('content'),
+                "content": message.get('content') or '',
                 "tool_calls": tool_calls
             })
             # Execute tools and get results
