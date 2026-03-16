@@ -38,7 +38,7 @@ def query_api(method: str, path: str, body: str = None) -> str:
     """Выполняет запрос к бэкенду и возвращает статус и тело ответа."""
     url = f"{AGENT_API_BASE_URL.rstrip('/')}/{path.lstrip('/')}"
     headers = {
-        "X-API-Key": LMS_API_KEY,
+        "Authorization": f"Bearer {LMS_API_KEY}",
         "Content-Type": "application/json"
     }
     try:
